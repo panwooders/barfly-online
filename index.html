@@ -900,7 +900,18 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value })
-      }).catch(() => setError("Salvataggio non riuscito: controlla la connessione."));
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            let msg = "HTTP " + res.status;
+            try {
+              const data = await res.json();
+              if (data && data.error) msg = data.error;
+            } catch (e) {}
+            setError("Salvataggio non riuscito (" + key + "): " + msg);
+          }
+        })
+        .catch((e) => setError("Salvataggio non riuscito: controlla la connessione.\n" + (e.message || e)));
     }
     const persist = (arr) => saveVocab("entries", arr);
     const persistTopics = (arr) => saveVocab("topics", arr);
