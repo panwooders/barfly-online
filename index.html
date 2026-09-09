@@ -1276,6 +1276,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             "Importa"
           )
         ),
+        error &&
+          /*#__PURE__*/React.createElement(
+            "div",
+            {
+              className: "vb-err"
+            },
+            error
+          ),
         view === "aggiungi" &&
           /*#__PURE__*/React.createElement(Add, {
             input: input,
@@ -1769,14 +1777,6 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             : "Aggiungi"
         )
       ),
-      error &&
-        /*#__PURE__*/React.createElement(
-          "div",
-          {
-            className: "vb-err"
-          },
-          error
-        ),
       /*#__PURE__*/React.createElement(
         "div",
         {
