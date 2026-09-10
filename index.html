@@ -167,8 +167,22 @@ html, body { margin:0; padding:0; }
 .vb-modal { background:var(--surface); border-radius:16px; padding:24px 22px; max-width:420px; width:100%; box-shadow:0 12px 40px rgba(20,30,28,.25); text-align:center; animation:vb-pop .18s cubic-bezier(.22,.9,.32,1); max-height:100%; overflow-y:auto; }
 /* Modale di revisione: il contenuto scorre, le CTA restano sempre visibili in fondo. */
 .vb-modal-review { display:flex; flex-direction:column; overflow:hidden; }
-.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions { flex:0 0 auto; }
+.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions, .vb-modal-review .vb-cand-hint { flex:0 0 auto; }
 .vb-modal-scroll { overflow-y:auto; min-height:0; margin-bottom:16px; }
+/* Passo 1 della modale: le rese inglesi tra cui scegliere. */
+.vb-cand-hint { font-size:13px; color:var(--soft); line-height:1.5; margin-bottom:14px; }
+.vb-cand {
+  display:block; width:100%; text-align:left; border:1px solid var(--line); background:var(--surface);
+  border-radius:13px; padding:13px 15px; margin-bottom:9px; font-family:inherit; color:var(--ink);
+  cursor:pointer; transition:border-color .12s, box-shadow .12s;
+}
+.vb-cand:hover { border-color:var(--teal); box-shadow:0 4px 18px rgba(30,40,38,.07); }
+.vb-cand:active { transform:translateY(1px); }
+.vb-cand:disabled { opacity:.5; cursor:default; }
+.vb-cand-term { display:block; font-family:'Fraunces',serif; font-size:18px; font-weight:500; letter-spacing:-.3px; }
+.vb-cand-meta { display:block; font-size:12.5px; color:var(--soft); margin-top:3px; }
+/* Le rese scartate, riproposte sotto il campo di input. */
+.vb-also { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:-6px 0 18px; }
 @keyframes vb-fade { from { opacity:0; } to { opacity:1; } }
 @keyframes vb-pop { from { opacity:0; transform:scale(.96) translateY(6px); } to { opacity:1; transform:scale(1) translateY(0); } }
 .vb-modal.left { text-align:left; }
@@ -595,7 +609,10 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const topicOf = (entry, topics) => entry.tags && entry.tags.length ? topics.find(t => t.id === entry.tags[0]) || null : null;
   function makeQuestion(entry, all) {
-    const others = all.filter(x => x.id !== entry.id);
+    // Fuori dai distrattori anche le forme collegate (stesso input italiano): come
+    // sinonimi renderebbero corretta piu di una risposta.
+    const kin = new Set([entry.id, ...(entry.related || [])]);
+    const others = all.filter(x => !kin.has(x.id));
     const gapEx = (entry.examples || []).find(ex => ex && ex.toLowerCase().includes(entry.term.toLowerCase()));
     const kinds = ["t2m", "m2t"];
     if (gapEx) kinds.push("gap");
@@ -668,7 +685,12 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       is_verb: p.is_verb === true ? true : p.is_verb === false ? false : null,
       tags: Array.isArray(p.tags) ? p.tags.filter(x => typeof x === "string") : [],
       dateAdded: p.dateAdded || new Date().toISOString(),
-      lastReviewed: p.lastReviewed || null
+      lastReviewed: p.lastReviewed || null,
+      // Stringa italiana digitata, quando la scheda nasce da una traduzione (altrimenti vuota).
+      // Entra nel match della ricerca: cercando "tutto bene" si ritrova "all good".
+      it_source: typeof p.it_source === "string" ? p.it_source : "",
+      // Id delle altre rese inglesi nate dallo stesso input italiano.
+      related: Array.isArray(p.related) ? p.related.filter(x => typeof x === "string") : []
     };
   }
   function normalizeTopic(t) {
@@ -871,6 +893,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     const [confirmDeleteTopic, setConfirmDeleteTopic] = useState(null); // topic | null
     const [pendingEntry, setPendingEntry] = useState(null); // scheda generata, in attesa di conferma
     const [countBump, setCountBump] = useState(false); // true per un attimo dopo un'aggiunta confermata
+    const [candidates, setCandidates] = useState(null); // { itSource, list:[{term,register,when}] } | null
+    const [alsoOptions, setAlsoOptions] = useState(null); // rese scartate, riproposte sotto l'input
 
     useEffect(() => {
       let cancelled = false;
@@ -915,6 +939,65 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     }
     const persist = (arr) => saveVocab("entries", arr);
     const persistTopics = (arr) => saveVocab("topics", arr);
+    // Chiamata unica al proxy. Restituisce la scheda pronta, oppure
+    // { input_lang:"it", candidates:[...] } quando la resa inglese e ambigua.
+    async function fetchGenerate(text) {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          term: text
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = (data && data.error) || "HTTP " + res.status;
+        throw new Error(detail);
+      }
+      return data;
+    }
+    // Prepara la scheda in sospeso. Restituisce null se il termine e gia in collezione.
+    function buildPending(data, fallbackTerm, itSource, related) {
+      const entry = normalizeEntry(data, fallbackTerm);
+      entry.tags = activeTopicId ? [activeTopicId] : [];
+      entry.it_source = itSource || "";
+      entry.related = related || [];
+      const dup = entries.find((e) => normTerm(e.term) === normTerm(entry.term));
+      if (dup) {
+        setDupeWarning({
+          existing: dup
+        });
+        return null;
+      }
+      return entry;
+    }
+    // Genera la scheda di una resa scelta: dal passo 1 della modale o da "Aggiungi anche".
+    async function generateChosen(cand, itSource, related) {
+      if (adding) return;
+      setAdding(true);
+      setError(null);
+      try {
+        const data = await fetchGenerate(cand.term);
+        const entry = buildPending(data, cand.term, itSource, related);
+        if (entry) setPendingEntry(entry);
+        else setCandidates(null);
+      } catch (e) {
+        setError("Non sono riuscito a creare la scheda.\n" + (e.message || e));
+        setCandidates(null);
+      } finally {
+        setAdding(false);
+      }
+    }
+    function chooseCandidate(cand) {
+      if (!candidates) return;
+      generateChosen(cand, candidates.itSource, []);
+    }
+    function addAlso(cand) {
+      if (!alsoOptions) return;
+      generateChosen(cand, alsoOptions.itSource, alsoOptions.relatedIds);
+    }
     async function addTerm() {
       const text = input.trim();
       if (!text || adding) return;
@@ -927,30 +1010,22 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       }
       setAdding(true);
       setError(null);
+      setAlsoOptions(null);
       try {
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            term: text
-          })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          const detail = (data && data.error) || "HTTP " + res.status;
-          throw new Error(detail);
-        }
-        const entry = normalizeEntry(data, text);
-        entry.tags = activeTopicId ? [activeTopicId] : [];
-        const dupAfter = entries.find((e) => normTerm(e.term) === normTerm(entry.term));
-        if (dupAfter) {
-          setDupeWarning({
-            existing: dupAfter
+        const data = await fetchGenerate(text);
+        // Input italiano con piu rese inglesi distinte: prima si sceglie quale
+        // forma imparare (passo 1 della modale), la scheda si genera dopo.
+        const list = Array.isArray(data.candidates) ? data.candidates.filter((c) => c && c.term) : [];
+        if (list.length > 1) {
+          setCandidates({
+            itSource: text,
+            list: list.slice(0, 4)
           });
+          setInput("");
           return;
         }
+        const entry = buildPending(data, text, data.input_lang === "it" ? text : "", []);
+        if (!entry) return;
         // Non aggiungiamo subito: la scheda resta "in sospeso" finché l'utente
         // non la conferma dal dialogo di revisione (vedi approvePending/discardPending).
         setPendingEntry(entry);
@@ -963,10 +1038,37 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     }
     function approvePending() {
       if (!pendingEntry) return;
-      const next = [pendingEntry, ...entries];
+      const rel = pendingEntry.related || [];
+      let next = [pendingEntry, ...entries];
+      // Il collegamento e bidirezionale: anche le schede gia salvate devono conoscere
+      // la nuova, altrimenti resterebbero distrattori l'una dell'altra nel ripasso.
+      if (rel.length)
+        next = next.map((e) =>
+          rel.indexOf(e.id) >= 0
+            ? { ...e, related: dedupe([...(e.related || []), pendingEntry.id]) }
+            : e
+        );
       setEntries(next);
       setOpenId(pendingEntry.id);
       persist(next);
+      // Le rese non scelte restano proposte sotto il campo di input come
+      // "Aggiungi anche": una scheda a testa, collegate tra loro.
+      const leftovers = candidates
+        ? { itSource: candidates.itSource, list: candidates.list, relatedIds: [] }
+        : alsoOptions;
+      if (leftovers) {
+        const rest = leftovers.list.filter((c) => normTerm(c.term) !== normTerm(pendingEntry.term));
+        setAlsoOptions(
+          rest.length
+            ? {
+                itSource: leftovers.itSource,
+                list: rest,
+                relatedIds: dedupe([...leftovers.relatedIds, pendingEntry.id])
+              }
+            : null
+        );
+      }
+      setCandidates(null);
       setPendingEntry(null);
       // Resta su "Aggiungi": non passiamo a Collezione, così si possono
       // inserire più termini di fila sullo stesso tema.
@@ -975,6 +1077,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     }
     function discardPending() {
       setPendingEntry(null);
+      setCandidates(null);
     }
     function remove(id) {
       const next = entries.filter((e) => e.id !== id);
@@ -1174,7 +1277,9 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       if (query.trim()) {
         const q = query.toLowerCase();
         list = list.filter((e) =>
-          (e.term + " " + e.meaning_it + " " + (e.examples || []).join(" ")).toLowerCase().includes(q)
+          (e.term + " " + e.meaning_it + " " + (e.it_source || "") + " " + (e.examples || []).join(" "))
+            .toLowerCase()
+            .includes(q)
         );
       }
       list = [...list];
@@ -1300,6 +1405,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             newTopicName: newTopicName,
             setNewTopicName: setNewTopicName,
             addTopic: addTopic,
+            alsoOptions: alsoOptions,
+            addAlso: addAlso,
             onManageTopics: () => setManageTopicsOpen(true)
           }),
         view === "collezione" &&
@@ -1581,7 +1688,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               )
             )
           ),
-        pendingEntry &&
+        (pendingEntry || candidates) &&
           /*#__PURE__*/React.createElement(
             "div",
             {
@@ -1599,8 +1706,54 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 {
                   className: "vb-modal-title"
                 },
-                "Nuova scheda pronta"
+                pendingEntry ? "Nuova scheda pronta" : "Quale vuoi imparare?"
               ),
+              // Passo 1: le rese inglesi dello stesso input italiano, ognuna con
+              // registro e situazione d'uso. Alla scelta parte la generazione.
+              !pendingEntry &&
+                /*#__PURE__*/React.createElement(
+                  "div",
+                  {
+                    className: "vb-cand-hint"
+                  },
+                  "\u201C",
+                  candidates.itSource,
+                  "\u201D si dice in pi\u00F9 modi. Le altre restano a portata di mano dopo."
+                ),
+              !pendingEntry &&
+                /*#__PURE__*/React.createElement(
+                  "div",
+                  {
+                    className: "vb-modal-scroll"
+                  },
+                  candidates.list.map((c) =>
+                    /*#__PURE__*/React.createElement(
+                      "button",
+                      {
+                        key: c.term,
+                        className: "vb-cand",
+                        disabled: adding,
+                        onClick: () => chooseCandidate(c)
+                      },
+                      /*#__PURE__*/React.createElement(
+                        "span",
+                        {
+                          className: "vb-cand-term"
+                        },
+                        c.term
+                      ),
+                      (c.register || c.when) &&
+                        /*#__PURE__*/React.createElement(
+                          "span",
+                          {
+                            className: "vb-cand-meta"
+                          },
+                          [c.register, c.when].filter(Boolean).join(" \u00B7 ")
+                        )
+                    )
+                  )
+                ),
+              pendingEntry &&
               /*#__PURE__*/React.createElement(
                 "div",
                 {
@@ -1700,16 +1853,17 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     className: "vb-btn vb-btn-ghost",
                     onClick: discardPending
                   },
-                  "Scarta"
+                  pendingEntry ? "Scarta" : "Annulla"
                 ),
-                /*#__PURE__*/React.createElement(
-                  "button",
-                  {
-                    className: "vb-btn",
-                    onClick: approvePending
-                  },
-                  "Aggiungi"
-                )
+                pendingEntry &&
+                  /*#__PURE__*/React.createElement(
+                    "button",
+                    {
+                      className: "vb-btn",
+                      onClick: approvePending
+                    },
+                    "Aggiungi"
+                  )
               )
             )
           ),
@@ -1736,6 +1890,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     newTopicName,
     setNewTopicName,
     addTopic,
+    alsoOptions,
+    addAlso,
     onManageTopics
   }) {
     return /*#__PURE__*/React.createElement(
@@ -1750,7 +1906,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         },
         /*#__PURE__*/React.createElement("input", {
           className: "vb-input",
-          placeholder: "es. to put up with, hit the nail on the head, serendipity\u2026",
+          placeholder: "es. to put up with, serendipity, o in italiano: tutto bene\u2026",
           value: input,
           onChange: (e) => setInput(e.target.value),
           onKeyDown: (e) => {
@@ -1777,6 +1933,32 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             : "Aggiungi"
         )
       ),
+      alsoOptions &&
+        /*#__PURE__*/React.createElement(
+          "div",
+          {
+            className: "vb-also"
+          },
+          /*#__PURE__*/React.createElement(
+            "span",
+            {
+              className: "vb-topics-label"
+            },
+            "Da \u201C" + alsoOptions.itSource + "\u201D, aggiungi anche:"
+          ),
+          alsoOptions.list.map((c) =>
+            /*#__PURE__*/React.createElement(
+              "button",
+              {
+                key: c.term,
+                className: "vb-chip",
+                disabled: adding,
+                onClick: () => addAlso(c)
+              },
+              "+ " + c.term
+            )
+          )
+        ),
       /*#__PURE__*/React.createElement(
         "div",
         {
@@ -2146,6 +2328,18 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     },
                     "Registro: ",
                     e.register
+                  ),
+                e.it_source &&
+                  /*#__PURE__*/React.createElement(
+                    "div",
+                    {
+                      className: "vb-ex2",
+                      style: {
+                        fontStyle: "normal"
+                      }
+                    },
+                    "Dall'italiano: ",
+                    e.it_source
                   ),
                 e.tip &&
                   /*#__PURE__*/React.createElement(
