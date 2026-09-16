@@ -167,14 +167,7 @@ html, body { margin:0; padding:0; }
 .vb-modal { background:var(--surface); border-radius:16px; padding:24px 22px; max-width:420px; width:100%; box-shadow:0 12px 40px rgba(20,30,28,.25); text-align:center; animation:vb-pop .18s cubic-bezier(.22,.9,.32,1); max-height:100%; overflow-y:auto; }
 /* Modale di revisione: il contenuto scorre, le CTA restano sempre visibili in fondo. */
 .vb-modal-review { display:flex; flex-direction:column; overflow:hidden; }
-.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions, .vb-modal-review .vb-cand-hint, .vb-modal-review .vb-back { flex:0 0 auto; }
-/* Ritorno alla lista delle rese, dal passo 2 al passo 1. */
-.vb-back {
-  display:block; background:none; border:none; padding:0; margin:2px 0 12px; text-align:left;
-  font-family:inherit; font-size:13px; color:var(--teal); cursor:pointer;
-}
-.vb-back:hover { text-decoration:underline; }
-.vb-back:disabled { opacity:.5; cursor:default; }
+.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions, .vb-modal-review .vb-cand-hint { flex:0 0 auto; }
 .vb-modal-scroll { overflow-y:auto; min-height:0; margin-bottom:16px; }
 /* Passo 1 della modale: le rese inglesi tra cui scegliere. */
 .vb-cand-hint { font-size:13px; color:var(--soft); line-height:1.5; margin-bottom:14px; }
@@ -1748,17 +1741,6 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 },
                 pendingEntry ? "Nuova scheda pronta" : "Quale vuoi imparare?"
               ),
-              pendingEntry &&
-                candidates &&
-                /*#__PURE__*/React.createElement(
-                  "button",
-                  {
-                    className: "vb-back",
-                    disabled: adding,
-                    onClick: backToCandidates
-                  },
-                  "\u2039 Altre rese di \u201C" + candidates.itSource + "\u201D"
-                ),
               // Passo 1: le rese inglesi dello stesso input italiano, ognuna con
               // registro e situazione d'uso. Alla scelta parte la generazione.
               !pendingEntry &&
@@ -1898,13 +1880,16 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 {
                   className: "vb-modal-actions vb-review-actions"
                 },
+                // Arrivando da una scelta, l'uscita naturale e tornare alla lista:
+                // per chiudere tutto si annulla dal passo 1 (o si tocca fuori).
                 /*#__PURE__*/React.createElement(
                   "button",
                   {
                     className: "vb-btn vb-btn-ghost",
-                    onClick: discardPending
+                    disabled: adding,
+                    onClick: pendingEntry && candidates ? backToCandidates : discardPending
                   },
-                  pendingEntry ? "Scarta" : "Annulla"
+                  pendingEntry ? (candidates ? "\u2039 Indietro" : "Scarta") : "Annulla"
                 ),
                 pendingEntry &&
                   /*#__PURE__*/React.createElement(
