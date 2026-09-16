@@ -167,7 +167,14 @@ html, body { margin:0; padding:0; }
 .vb-modal { background:var(--surface); border-radius:16px; padding:24px 22px; max-width:420px; width:100%; box-shadow:0 12px 40px rgba(20,30,28,.25); text-align:center; animation:vb-pop .18s cubic-bezier(.22,.9,.32,1); max-height:100%; overflow-y:auto; }
 /* Modale di revisione: il contenuto scorre, le CTA restano sempre visibili in fondo. */
 .vb-modal-review { display:flex; flex-direction:column; overflow:hidden; }
-.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions, .vb-modal-review .vb-cand-hint { flex:0 0 auto; }
+.vb-modal-review .vb-modal-title, .vb-modal-review .vb-modal-actions, .vb-modal-review .vb-cand-hint, .vb-modal-review .vb-back { flex:0 0 auto; }
+/* Ritorno alla lista delle rese, dal passo 2 al passo 1. */
+.vb-back {
+  display:block; background:none; border:none; padding:0; margin:2px 0 12px; text-align:left;
+  font-family:inherit; font-size:13px; color:var(--teal); cursor:pointer;
+}
+.vb-back:hover { text-decoration:underline; }
+.vb-back:disabled { opacity:.5; cursor:default; }
 .vb-modal-scroll { overflow-y:auto; min-height:0; margin-bottom:16px; }
 /* Passo 1 della modale: le rese inglesi tra cui scegliere. */
 .vb-cand-hint { font-size:13px; color:var(--soft); line-height:1.5; margin-bottom:14px; }
@@ -564,7 +571,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   const {
     useState,
     useEffect,
-    useMemo
+    useMemo,
+    useRef
   } = React;
   const TYPES = {
     word: {
@@ -895,6 +903,9 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     const [countBump, setCountBump] = useState(false); // true per un attimo dopo un'aggiunta confermata
     const [candidates, setCandidates] = useState(null); // { itSource, list:[{term,register,when}] } | null
     const [alsoOptions, setAlsoOptions] = useState(null); // rese scartate, riproposte sotto l'input
+    // Schede gia generate durante questa scelta, per termine: tornando alla lista e
+    // rientrando, la scheda ricompare senza una nuova chiamata al modello.
+    const cardCache = useRef({});
 
     useEffect(() => {
       let cancelled = false;
@@ -976,13 +987,33 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     // Genera la scheda di una resa scelta: dal passo 1 della modale o da "Aggiungi anche".
     async function generateChosen(cand, itSource, related) {
       if (adding) return;
+      // Gia vista in questa sessione di scelta: si riapre com'era, senza spendere una chiamata.
+      const cached = cardCache.current[normTerm(cand.term)];
+      if (cached) {
+        const dup = entries.find((e) => normTerm(e.term) === normTerm(cached.term));
+        if (dup) {
+          setDupeWarning({
+            existing: dup
+          });
+          setCandidates(null);
+          return;
+        }
+        setPendingEntry({
+          ...cached,
+          it_source: itSource || cached.it_source,
+          related: related || []
+        });
+        return;
+      }
       setAdding(true);
       setError(null);
       try {
         const data = await fetchGenerate(cand.term);
         const entry = buildPending(data, cand.term, itSource, related);
-        if (entry) setPendingEntry(entry);
-        else setCandidates(null);
+        if (entry) {
+          cardCache.current[normTerm(entry.term)] = entry;
+          setPendingEntry(entry);
+        } else setCandidates(null);
       } catch (e) {
         setError("Non sono riuscito a creare la scheda.\n" + (e.message || e));
         setCandidates(null);
@@ -993,6 +1024,13 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     function chooseCandidate(cand) {
       if (!candidates) return;
       generateChosen(cand, candidates.itSource, []);
+    }
+    // Torna al passo 1 con la lista di partenza, quella gia calcolata: rigenerarla
+    // darebbe rese diverse da quelle appena viste.
+    function backToCandidates() {
+      if (!pendingEntry) return;
+      cardCache.current[normTerm(pendingEntry.term)] = pendingEntry;
+      setPendingEntry(null);
     }
     function addAlso(cand) {
       if (!alsoOptions) return;
@@ -1011,6 +1049,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       setAdding(true);
       setError(null);
       setAlsoOptions(null);
+      cardCache.current = {};
       try {
         const data = await fetchGenerate(text);
         // Input italiano con piu rese inglesi distinte: prima si sceglie quale
@@ -1078,6 +1117,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     function discardPending() {
       setPendingEntry(null);
       setCandidates(null);
+      cardCache.current = {};
     }
     function remove(id) {
       const next = entries.filter((e) => e.id !== id);
@@ -1708,6 +1748,17 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 },
                 pendingEntry ? "Nuova scheda pronta" : "Quale vuoi imparare?"
               ),
+              pendingEntry &&
+                candidates &&
+                /*#__PURE__*/React.createElement(
+                  "button",
+                  {
+                    className: "vb-back",
+                    disabled: adding,
+                    onClick: backToCandidates
+                  },
+                  "\u2039 Altre rese di \u201C" + candidates.itSource + "\u201D"
+                ),
               // Passo 1: le rese inglesi dello stesso input italiano, ognuna con
               // registro e situazione d'uso. Alla scelta parte la generazione.
               !pendingEntry &&
