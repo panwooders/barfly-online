@@ -212,6 +212,21 @@ html, body { margin:0; padding:0; }
 .vb-flash .vb-term { font-size:34px; }
 .vb-reveal-mean { font-size:18px; margin:14px 0; }
 .vb-reveal-ex { font-size:14px; color:var(--soft); font-style:italic; }
+/* Lettura vocale (Web Speech API, voce Samantha en-US) */
+.vb-spk {
+  display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:30px; height:30px; padding:0; border-radius:50%;
+  border:1px solid var(--line); background:var(--teal-soft); color:var(--teal);
+  cursor:pointer; vertical-align:middle; align-self:center;
+  transition:background-color .12s, color .12s, border-color .12s;
+  -webkit-tap-highlight-color:transparent;
+}
+.vb-spk svg { width:15px; height:15px; }
+.vb-spk.sm { width:24px; height:24px; background:none; margin-right:6px; vertical-align:-5px; }
+.vb-spk.sm svg { width:13px; height:13px; }
+.vb-spk.on { background:var(--teal); color:#fff; border-color:var(--teal); }
+.vb-flash .vb-spk:not(.sm) { width:36px; height:36px; margin-left:10px; vertical-align:6px; }
+.vb-flash .vb-spk:not(.sm) svg { width:18px; height:18px; }
 .vb-rev-actions { display:flex; gap:10px; margin-top:18px; }
 .vb-rev-actions .vb-btn { flex:1; min-width:0; }
 .vb-btn-ghost { background:var(--surface); color:var(--ink); border:1.5px solid var(--line); }
@@ -597,6 +612,80 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   const isVerbEntry = e => e.is_verb === true || e.is_verb == null && e.type === "phrasal_verb";
   const withTo = (term, verb) => verb && !/^to\s/i.test(term) ? "to " + term : term;
   const displayTerm = e => withTo(e.term, isVerbEntry(e));
+
+  // ===== Lettura vocale (Web Speech API del browser) =====
+  // Voce scelta: Samantha (inglese US). Se il dispositivo non ce l'ha
+  // (Windows, Android), si usa la prima voce en-US disponibile.
+  const TTS_LANG = "en-US";
+  const TTS_RATE = 0.9;
+  const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
+  let ttsVoice = null;
+  let ttsStop = null; // callback che resetta il pulsante che sta parlando
+  function pickVoice() {
+    if (!ttsSupported) return null;
+    const vs = window.speechSynthesis.getVoices() || [];
+    const us = vs.filter(v => /^en[-_]US/i.test(v.lang));
+    ttsVoice = vs.find(v => /samantha/i.test(v.name) && /^en/i.test(v.lang)) || us.find(v => v.localService) || us[0] || null;
+    return ttsVoice;
+  }
+  if (ttsSupported) {
+    pickVoice();
+    if (window.speechSynthesis.addEventListener) window.speechSynthesis.addEventListener("voiceschanged", pickVoice);
+    else window.speechSynthesis.onvoiceschanged = pickVoice;
+  }
+  function stopSpeaking() {
+    if (!ttsSupported) return;
+    window.speechSynthesis.cancel();
+    if (ttsStop) ttsStop();
+  }
+  function speak(text, onDone) {
+    if (!ttsSupported || !text) { if (onDone) onDone(); return; }
+    stopSpeaking();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = ttsVoice || pickVoice();
+    if (v) u.voice = v;
+    u.lang = v ? v.lang : TTS_LANG;
+    u.rate = TTS_RATE;
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      if (ttsStop === done) ttsStop = null;
+      if (onDone) onDone();
+    };
+    ttsStop = done;
+    u.onend = done;
+    u.onerror = done;
+    window.speechSynthesis.speak(u);
+  }
+  const iconSpeak = /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2",
+    strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true"
+  },
+    /*#__PURE__*/React.createElement("polygon", { points: "11 5 6 9 2 9 2 15 6 15 11 19 11 5" }),
+    /*#__PURE__*/React.createElement("path", { d: "M15.54 8.46a5 5 0 0 1 0 7.07" }),
+    /*#__PURE__*/React.createElement("path", { d: "M19.07 4.93a10 10 0 0 1 0 14.14" })
+  );
+  function SpeakBtn({ text, small }) {
+    const [on, setOn] = useState(false);
+    const onRef = useRef(false);
+    onRef.current = on;
+    // Se il pulsante sparisce mentre parla (es. scheda richiusa), interrompe la lettura.
+    useEffect(() => () => { if (onRef.current) stopSpeaking(); }, []);
+    if (!ttsSupported || !text) return null;
+    return /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      className: "vb-spk" + (small ? " sm" : "") + (on ? " on" : ""),
+      "aria-label": "Ascolta",
+      title: "Ascolta",
+      onClick: ev => {
+        ev.stopPropagation();
+        if (on) { stopSpeaking(); return; }
+        setOn(true);
+        speak(text, () => setOn(false));
+      }
+    }, iconSpeak);
+  }
   const normTerm = s => (s || "").trim().toLowerCase().replace(/^to\s+/, "");
   const shuffle = arr => {
     const a = [...arr];
@@ -1812,6 +1901,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     },
                     displayTerm(pendingEntry)
                   ),
+                  /*#__PURE__*/React.createElement(SpeakBtn, { text: displayTerm(pendingEntry) }),
                   /*#__PURE__*/React.createElement(
                     "span",
                     {
@@ -1836,6 +1926,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     {
                       className: "vb-ex"
                     },
+                    /*#__PURE__*/React.createElement(SpeakBtn, { text: pendingEntry.examples[0], small: true }),
                     "“",
                     pendingEntry.examples[0],
                     "”"
@@ -2296,6 +2387,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 },
                 displayTerm(e)
               ),
+              /*#__PURE__*/React.createElement(SpeakBtn, { text: displayTerm(e) }),
               /*#__PURE__*/React.createElement(
                 "span",
                 {
@@ -2333,6 +2425,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 {
                   className: "vb-ex"
                 },
+                /*#__PURE__*/React.createElement(SpeakBtn, { text: e.examples[0], small: true }),
                 "\u201C",
                 e.examples[0],
                 "\u201D"
@@ -2349,6 +2442,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     {
                       className: "vb-ex2"
                     },
+                    /*#__PURE__*/React.createElement(SpeakBtn, { text: e.examples[1], small: true }),
                     "\u201C",
                     e.examples[1],
                     "\u201D"
@@ -2656,11 +2750,11 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
       className: "vb-term"
-    }, displayTerm(card))), shown && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    }, displayTerm(card)), /*#__PURE__*/React.createElement(SpeakBtn, { text: displayTerm(card) })), shown && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       className: "vb-reveal-mean"
     }, card.meaning_it), card.examples[0] && /*#__PURE__*/React.createElement("div", {
       className: "vb-reveal-ex"
-    }, "“", card.examples[0], "”"), card.tip && /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement(SpeakBtn, { text: card.examples[0], small: true }), "“", card.examples[0], "”"), card.tip && /*#__PURE__*/React.createElement("div", {
       className: "vb-tip",
       style: {
         marginTop: 14,
