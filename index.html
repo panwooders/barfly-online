@@ -265,6 +265,43 @@ html, body { margin:0; padding:0; }
   .vb-title{font-size:27px;} .vb-stats{gap:14px;}
   .vb-add{flex-direction:column;} .vb-btn{padding:13px;}
 }
+
+/* Contesto reale ("Visto dal vivo") */
+.vb-ctx { margin-top:14px; padding-top:12px; border-top:1px dashed var(--line); cursor:default; }
+.vb-ctx-pending { margin-top:12px; padding-top:10px; }
+.vb-ctx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.vb-ctx-title { font-family:'Fraunces',serif; font-size:16px; font-weight:500; }
+.vb-ctx-empty { font-size:13px; color:var(--soft); margin-bottom:10px; }
+.vb-ctx-item { background:var(--paper); border-radius:11px; padding:10px 12px; margin-bottom:10px; }
+.vb-ctx-proposal { background:var(--teal-soft); border:1px dashed var(--teal); }
+.vb-ctx-img { display:block; width:100%; max-height:240px; object-fit:cover; object-position:top; border-radius:8px; cursor:zoom-in; margin-bottom:8px; background:var(--line); }
+.vb-ctx-yt { position:relative; display:block; margin-bottom:8px; }
+.vb-ctx-yt img { display:block; width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:8px; background:var(--line); }
+.vb-ctx-play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:30px; color:#fff; text-shadow:0 2px 12px rgba(0,0,0,.55); }
+.vb-ctx-quote { font-size:14px; font-style:italic; }
+.vb-ctx-source, .vb-ctx-note { font-size:12.5px; color:var(--soft); margin-top:4px; }
+.vb-ctx-meta { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:8px; font-size:12px; }
+.vb-ctx-meta > :last-child { margin-left:auto; }
+.vb-ctx-link { color:var(--teal); text-decoration:none; font-weight:500; }
+.vb-ctx-ai { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--soft); }
+.vb-ctx-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.vb-ctx-spend { font-size:11.5px; color:#9A9C92; margin-left:auto; }
+.vb-ctx-cost { font-size:12px; color:var(--teal); background:var(--teal-soft); border-radius:8px; padding:7px 10px; margin-bottom:10px; }
+.vb-ctx-found { margin-bottom:12px; }
+.vb-ctx-form { display:flex; flex-direction:column; gap:8px; margin-bottom:10px; }
+.vb-ctx-input { width:100%; border:1px solid var(--line); background:var(--surface); border-radius:10px; padding:9px 12px; font-size:16px; font-family:inherit; color:var(--ink); outline:none; resize:vertical; }
+.vb-ctx-input:focus { border-color:var(--teal); }
+.vb-ctx-shotbtn { align-self:flex-start; }
+.vb-ctx-shot { display:flex; align-items:flex-end; gap:10px; }
+.vb-ctx-shot img { width:72px; height:96px; object-fit:cover; object-position:top; border-radius:8px; border:1px solid var(--line); }
+.vb-ctx-actions { display:inline-flex; align-items:center; justify-content:flex-end; gap:14px; }
+.vb-ctx-newform .vb-ctx-actions { display:flex; margin-bottom:4px; }
+.vb-ctx-err { margin:8px 0 10px; }
+.vb-btn.vb-btn-sm { min-width:0; padding:9px 16px; font-size:13.5px; }
+.vb-chip:disabled { opacity:.55; cursor:default; }
+.vb-ctx-count { margin-left:6px; }
+.vb-lightbox { position:fixed; inset:0; z-index:60; background:rgba(20,28,26,.88); display:flex; align-items:center; justify-content:center; padding:20px; animation:vb-fade .15s ease; cursor:zoom-out; }
+.vb-lightbox img { max-width:100%; max-height:100%; border-radius:10px; }
 </style>
 </head>
 <body>
@@ -780,7 +817,9 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       // Entra nel match della ricerca: cercando "tutto bene" si ritrova "all good".
       it_source: typeof p.it_source === "string" ? p.it_source : "",
       // Id delle altre rese inglesi nate dallo stesso input italiano.
-      related: Array.isArray(p.related) ? p.related.filter(x => typeof x === "string") : []
+      related: Array.isArray(p.related) ? p.related.filter(x => typeof x === "string") : [],
+      // Dove il termine e stato visto davvero (link, frase, screenshot). Assente sulle schede storiche.
+      contexts: Array.isArray(p.contexts) ? p.contexts.map(normalizeContext).filter(ctxHasContent) : []
     };
   }
   function normalizeTopic(t) {
@@ -960,6 +999,418 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       )
     );
   }
+  // ---- Contesto reale ("Visto dal vivo") ----
+  // Ogni scheda puo avere dei contesti: dove il termine e stato visto o sentito
+  // davvero (un reel, una scena, una citazione), con link, frase e screenshot.
+  // Gli screenshot stanno su Supabase Storage (api/media.js), nel JSON resta solo il percorso.
+  const h = React.createElement;
+  const CTX_SPEND_KEY = "vocab:ctxspend";
+  function readSpend() {
+    try {
+      const v = JSON.parse(localStorage.getItem(CTX_SPEND_KEY) || "null");
+      return v && typeof v.usd === "number" ? v : { usd: 0, calls: 0 };
+    } catch (e) {
+      return { usd: 0, calls: 0 };
+    }
+  }
+  function addSpend(usd) {
+    const s = readSpend();
+    const next = { usd: s.usd + (usd || 0), calls: s.calls + 1 };
+    try {
+      localStorage.setItem(CTX_SPEND_KEY, JSON.stringify(next));
+    } catch (e) {}
+    return next;
+  }
+  const fmtUsd = (n) =>
+    n.toLocaleString("it-IT", { minimumFractionDigits: 3, maximumFractionDigits: 4 }) + " $";
+  function costLine(cost) {
+    if (!cost) return "";
+    const tok = (cost.input_tokens || 0) + (cost.output_tokens || 0);
+    const parts = [
+      cost.usd == null ? "costo non calcolabile per " + cost.model : "Questa ricerca: " + fmtUsd(cost.usd),
+      cost.searches + (cost.searches === 1 ? " ricerca web" : " ricerche web"),
+      tok.toLocaleString("it-IT") + " token"
+    ];
+    return parts.join(" · ");
+  }
+  function normalizeContext(c) {
+    c = c || {};
+    const str = (v) => (typeof v === "string" ? v : "");
+    return {
+      id: c.id || uid(),
+      url: str(c.url).trim(),
+      title: str(c.title),
+      quote: str(c.quote),
+      source: str(c.source),
+      note: str(c.note),
+      image: str(c.image),
+      origin: c.origin === "ai" ? "ai" : "manual",
+      addedAt: c.addedAt || new Date().toISOString()
+    };
+  }
+  const ctxHasContent = (c) => !!(c && ((c.url || "").trim() || (c.quote || "").trim() || c.image || c.file));
+  const emptyDraft = () => ({ url: "", quote: "", source: "", file: null, preview: "" });
+  function hostOf(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (e) {
+      return "";
+    }
+  }
+  function youtubeId(url) {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.replace(/^(www\.|m\.)/, "");
+      if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
+      if (host.endsWith("youtube.com")) {
+        if (u.searchParams.get("v")) return u.searchParams.get("v");
+        const m = u.pathname.match(/^\/(shorts|embed|live)\/([\w-]{6,})/);
+        if (m) return m[2];
+      }
+    } catch (e) {}
+    return null;
+  }
+  const mediaUrl = (path) => "/api/media?p=" + encodeURIComponent(path);
+  function deleteImage(path) {
+    if (path) fetch(mediaUrl(path), { method: "DELETE" }).catch(() => {});
+  }
+  // Ridimensiona lo screenshot (lato lungo max 1600px, JPEG) prima di caricarlo.
+  function compressImage(file, maxSide = 1600, quality = 0.82) {
+    return new Promise((resolve, reject) => {
+      const src = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const hh = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = hh;
+        const g = canvas.getContext("2d");
+        g.fillStyle = "#fff";
+        g.fillRect(0, 0, w, hh);
+        g.drawImage(img, 0, 0, w, hh);
+        URL.revokeObjectURL(src);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("compressione non riuscita"))), "image/jpeg", quality);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(src);
+        reject(new Error("immagine non leggibile"));
+      };
+      img.src = src;
+    });
+  }
+  async function uploadImage(file) {
+    const blob = await compressImage(file);
+    const res = await fetch("/api/media", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (e) {}
+    if (!res.ok || !data.path) throw new Error((data && data.error) || "HTTP " + res.status);
+    return data.path;
+  }
+  // Bozza del form -> contesto salvato (carica prima lo screenshot, se c'e).
+  async function draftToContext(draft) {
+    const image = draft.file ? await uploadImage(draft.file) : "";
+    const raw = (draft.url || "").trim();
+    return normalizeContext({
+      url: raw && !/^https?:\/\//i.test(raw) ? "https://" + raw : raw,
+      quote: (draft.quote || "").trim(),
+      source: (draft.source || "").trim(),
+      image,
+      origin: "manual"
+    });
+  }
+
+  function ContextForm({ draft, setDraft }) {
+    const fileRef = useRef(null);
+    useEffect(
+      () => () => {
+        if (draft.preview) URL.revokeObjectURL(draft.preview);
+      },
+      [draft.preview]
+    );
+    const set = (k) => (ev) => {
+      const v = ev.target.value;
+      setDraft((d) => ({ ...d, [k]: v }));
+    };
+    function pick(ev) {
+      const f = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (f) setDraft((d) => ({ ...d, file: f, preview: URL.createObjectURL(f) }));
+    }
+    return h(
+      "div",
+      { className: "vb-ctx-form" },
+      h("input", {
+        className: "vb-ctx-input",
+        type: "url",
+        inputMode: "url",
+        autoCapitalize: "off",
+        placeholder: "Link (Instagram, YouTube, articolo…)",
+        value: draft.url,
+        onChange: set("url")
+      }),
+      h("textarea", {
+        className: "vb-ctx-input",
+        rows: 2,
+        placeholder: "La frase che hai sentito (facoltativa)",
+        value: draft.quote,
+        onChange: set("quote")
+      }),
+      h("input", {
+        className: "vb-ctx-input",
+        placeholder: "Chi la dice, o dove (facoltativo)",
+        value: draft.source,
+        onChange: set("source")
+      }),
+      draft.preview
+        ? h(
+            "div",
+            { className: "vb-ctx-shot" },
+            h("img", { src: draft.preview, alt: "Anteprima screenshot" }),
+            h(
+              "button",
+              { type: "button", className: "vb-link", onClick: () => setDraft((d) => ({ ...d, file: null, preview: "" })) },
+              "Rimuovi screenshot"
+            )
+          )
+        : h(
+            "button",
+            { type: "button", className: "vb-chip vb-ctx-shotbtn", onClick: () => fileRef.current && fileRef.current.click() },
+            "📷 Aggiungi uno screenshot"
+          ),
+      h("input", { ref: fileRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: pick })
+    );
+  }
+
+  // Un contesto (salvato o proposto dall'IA). "actions" sostituisce il pulsante Elimina.
+  function ContextItem({ c, onDelete, onOpenImage, actions, proposal }) {
+    const [confirm, setConfirm] = useState(false);
+    const yt = c.url ? youtubeId(c.url) : null;
+    const host = c.url ? hostOf(c.url) : "";
+    return h(
+      "div",
+      { className: "vb-ctx-item" + (proposal ? " vb-ctx-proposal" : "") },
+      c.image &&
+        h("img", {
+          className: "vb-ctx-img",
+          src: mediaUrl(c.image),
+          alt: "Screenshot",
+          loading: "lazy",
+          onClick: () => onOpenImage && onOpenImage(mediaUrl(c.image))
+        }),
+      !c.image &&
+        yt &&
+        h(
+          "a",
+          { className: "vb-ctx-yt", href: c.url, target: "_blank", rel: "noopener noreferrer" },
+          h("img", { src: "https://i.ytimg.com/vi/" + yt + "/hqdefault.jpg", alt: "", loading: "lazy" }),
+          h("span", { className: "vb-ctx-play" }, "▶")
+        ),
+      c.quote && h("div", { className: "vb-ctx-quote" }, "“", c.quote, "”"),
+      (c.source || (!c.quote && c.title)) && h("div", { className: "vb-ctx-source" }, "— ", c.source || c.title),
+      c.note && h("div", { className: "vb-ctx-note" }, c.note),
+      h(
+        "div",
+        { className: "vb-ctx-meta" },
+        c.url
+          ? h("a", { className: "vb-ctx-link", href: c.url, target: "_blank", rel: "noopener noreferrer" }, (yt ? "YouTube" : host || "link") + " ↗")
+          : null,
+        c.origin === "ai" && !proposal && h("span", { className: "vb-ctx-ai" }, "trovato dall'IA"),
+        actions ||
+          h(
+            "button",
+            { className: "vb-del", onClick: () => (confirm ? onDelete(c) : setConfirm(true)) },
+            confirm ? "Conferma eliminazione" : "Elimina"
+          )
+      )
+    );
+  }
+
+  function ContextSection({ entry, updateContexts, onOpenImage }) {
+    const ctxs = entry.contexts || [];
+    const [formOpen, setFormOpen] = useState(false);
+    const [draft, setDraft] = useState(emptyDraft);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState(null);
+    const [found, setFound] = useState(null); // { items, cost, dropped }
+    const [searching, setSearching] = useState(false);
+    const [spend, setSpend] = useState(readSpend);
+
+    async function saveDraft() {
+      if (!ctxHasContent(draft) || busy) return;
+      setBusy(true);
+      setErr(null);
+      try {
+        const c = await draftToContext(draft);
+        updateContexts(entry.id, (list) => [...list, c]);
+        setDraft(emptyDraft());
+        setFormOpen(false);
+      } catch (e) {
+        setErr("Salvataggio non riuscito: " + (e.message || e));
+      } finally {
+        setBusy(false);
+      }
+    }
+    async function findWithAI() {
+      if (searching) return;
+      setSearching(true);
+      setErr(null);
+      setFound(null);
+      try {
+        const res = await fetch("/api/context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ term: displayTerm(entry), meaning_it: entry.meaning_it, type: entry.type })
+        });
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (e) {}
+        // Anche una ricerca fallita puo essere costata: la si conta comunque.
+        if (data && data.cost && typeof data.cost.usd === "number") setSpend(addSpend(data.cost.usd));
+        if (!res.ok) {
+          const e = new Error((data && data.error) || "HTTP " + res.status);
+          e.cost = data && data.cost;
+          throw e;
+        }
+        setFound({
+          items: (data.items || []).map((it) => ({ ...it, _id: uid() })),
+          cost: data.cost || null,
+          dropped: data.dropped || 0
+        });
+      } catch (e) {
+        setErr("Ricerca non riuscita: " + (e.message || e) + (e.cost ? " · " + costLine(e.cost) : ""));
+      } finally {
+        setSearching(false);
+      }
+    }
+    // Tolta l'ultima proposta (salvata o scartata), il pannello si chiude da solo.
+    const dropFound = (it) =>
+      setFound((f) => {
+        if (!f) return f;
+        const items = f.items.filter((x) => x._id !== it._id);
+        return items.length ? { ...f, items } : null;
+      });
+    function keep(it) {
+      const c = normalizeContext({
+        url: it.url,
+        title: it.title,
+        quote: it.quote,
+        source: it.source,
+        note: it.why,
+        origin: "ai"
+      });
+      updateContexts(entry.id, (list) => [...list, c]);
+      dropFound(it);
+    }
+    function removeCtx(c) {
+      deleteImage(c.image);
+      updateContexts(entry.id, (list) => list.filter((x) => x.id !== c.id));
+    }
+
+    return h(
+      "div",
+      { className: "vb-ctx", onClick: (ev) => ev.stopPropagation() },
+      h(
+        "div",
+        { className: "vb-ctx-head" },
+        h("span", { className: "vb-ctx-title" }, "Visto dal vivo"),
+        ctxs.length > 0 && h("span", { className: "vb-topic-row-count" }, ctxs.length)
+      ),
+      ctxs.length === 0 &&
+        !formOpen &&
+        !found &&
+        h("div", { className: "vb-ctx-empty" }, "Un reel, una scena, una frase: dove l'hai sentito usare."),
+      ctxs.map((c) => h(ContextItem, { key: c.id, c, onDelete: removeCtx, onOpenImage })),
+      found &&
+        h(
+          "div",
+          { className: "vb-ctx-found" },
+          h("div", { className: "vb-ctx-cost" }, costLine(found.cost)),
+          found.items.length === 0
+            ? h(
+                "div",
+                { className: "vb-ctx-empty" },
+                found.dropped
+                  ? "Nessun esempio verificabile: " +
+                      found.dropped +
+                      (found.dropped === 1 ? " link scartato perché" : " link scartati perché") +
+                      " non comparivano nei risultati di ricerca."
+                  : "Nessun esempio affidabile trovato."
+              )
+            : found.items.map((it) =>
+                h(ContextItem, {
+                  key: it._id,
+                  c: { ...it, note: it.why },
+                  proposal: true,
+                  actions: h(
+                    "span",
+                    { className: "vb-ctx-actions" },
+                    h("button", { className: "vb-link", onClick: () => dropFound(it) }, "Scarta"),
+                    h("button", { className: "vb-chip topic on", onClick: () => keep(it) }, "Salva")
+                  )
+                })
+              ),
+          found.items.length > 0 &&
+            found.dropped > 0 &&
+            h(
+              "div",
+              { className: "vb-ctx-note", style: { marginBottom: 8 } },
+              found.dropped + (found.dropped === 1 ? " altro risultato scartato" : " altri risultati scartati") + ": link non verificabili."
+            ),
+          h("button", { className: "vb-link", onClick: () => setFound(null) }, "Chiudi i risultati")
+        ),
+      formOpen &&
+        h(
+          "div",
+          { className: "vb-ctx-newform" },
+          h(ContextForm, { draft, setDraft }),
+          h(
+            "div",
+            { className: "vb-ctx-actions" },
+            h(
+              "button",
+              {
+                className: "vb-link",
+                disabled: busy,
+                onClick: () => {
+                  setFormOpen(false);
+                  setDraft(emptyDraft());
+                }
+              },
+              "Annulla"
+            ),
+            h(
+              "button",
+              { className: "vb-btn vb-btn-sm", disabled: busy || !ctxHasContent(draft), onClick: saveDraft },
+              busy ? [h("span", { key: "s", className: "vb-spin" }), " Salvo…"] : "Salva"
+            )
+          )
+        ),
+      err && h("div", { className: "vb-err vb-ctx-err" }, err),
+      !formOpen &&
+        h(
+          "div",
+          { className: "vb-ctx-bar" },
+          h("button", { className: "vb-chip", onClick: () => setFormOpen(true) }, "+ Aggiungi tu"),
+          h(
+            "button",
+            { className: "vb-chip", disabled: searching, onClick: findWithAI },
+            searching ? "Cerco…" : "✨ Trova con l'IA"
+          ),
+          spend.calls > 0 &&
+            h(
+              "span",
+              { className: "vb-ctx-spend" },
+              "finora " + fmtUsd(spend.usd) + " in " + spend.calls + (spend.calls === 1 ? " ricerca" : " ricerche")
+            )
+        )
+    );
+  }
+
   function App() {
     const [entries, setEntries] = useState([]);
     const [topics, setTopics] = useState([]);
@@ -988,6 +1439,10 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     // Schede gia generate durante questa scelta, per termine: tornando alla lista e
     // rientrando, la scheda ricompare senza una nuova chiamata al modello.
     const cardCache = useRef({});
+    // Contesto ("dove l'hai visto?") allegato alla scheda in sospeso, dalla modale di revisione.
+    const [pendingCtx, setPendingCtx] = useState(null);
+    const [pendingCtxErr, setPendingCtxErr] = useState(null);
+    const [approving, setApproving] = useState(false);
 
     useEffect(() => {
       let cancelled = false;
@@ -1132,6 +1587,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       setError(null);
       setAlsoOptions(null);
       cardCache.current = {};
+      setPendingCtx(null);
+      setPendingCtxErr(null);
       try {
         const data = await fetchGenerate(text);
         // Input italiano con piu rese inglesi distinte: prima si sceglie quale
@@ -1157,20 +1614,21 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         setAdding(false);
       }
     }
-    function approvePending() {
-      if (!pendingEntry) return;
-      const rel = pendingEntry.related || [];
-      let next = [pendingEntry, ...entries];
+    function approvePending(override) {
+      const pe = override && override.id ? override : pendingEntry;
+      if (!pe) return;
+      const rel = pe.related || [];
+      let next = [pe, ...entries];
       // Il collegamento e bidirezionale: anche le schede gia salvate devono conoscere
       // la nuova, altrimenti resterebbero distrattori l'una dell'altra nel ripasso.
       if (rel.length)
         next = next.map((e) =>
           rel.indexOf(e.id) >= 0
-            ? { ...e, related: dedupe([...(e.related || []), pendingEntry.id]) }
+            ? { ...e, related: dedupe([...(e.related || []), pe.id]) }
             : e
         );
       setEntries(next);
-      setOpenId(pendingEntry.id);
+      setOpenId(pe.id);
       persist(next);
       // Le rese non scelte restano proposte sotto il campo di input come
       // "Aggiungi anche": una scheda a testa, collegate tra loro.
@@ -1178,13 +1636,13 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         ? { itSource: candidates.itSource, list: candidates.list, relatedIds: [] }
         : alsoOptions;
       if (leftovers) {
-        const rest = leftovers.list.filter((c) => normTerm(c.term) !== normTerm(pendingEntry.term));
+        const rest = leftovers.list.filter((c) => normTerm(c.term) !== normTerm(pe.term));
         setAlsoOptions(
           rest.length
             ? {
                 itSource: leftovers.itSource,
                 list: rest,
-                relatedIds: dedupe([...leftovers.relatedIds, pendingEntry.id])
+                relatedIds: dedupe([...leftovers.relatedIds, pe.id])
               }
             : null
         );
@@ -1197,11 +1655,38 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       setTimeout(() => setCountBump(false), 900);
     }
     function discardPending() {
+      if (approving) return;
       setPendingEntry(null);
       setCandidates(null);
       cardCache.current = {};
+      setPendingCtx(null);
+      setPendingCtxErr(null);
+    }
+    // "Aggiungi" nella modale: se e stato indicato dove si e visto il termine,
+    // carica prima lo screenshot, poi salva la scheda con il suo contesto.
+    async function confirmPending() {
+      if (!pendingEntry || approving) return;
+      if (!ctxHasContent(pendingCtx)) {
+        setPendingCtx(null);
+        setPendingCtxErr(null);
+        approvePending();
+        return;
+      }
+      setApproving(true);
+      setPendingCtxErr(null);
+      try {
+        const c = await draftToContext(pendingCtx);
+        approvePending({ ...pendingEntry, contexts: [...(pendingEntry.contexts || []), c] });
+        setPendingCtx(null);
+      } catch (e) {
+        setPendingCtxErr("Screenshot non caricato: " + (e.message || e) + ". Riprova, o rimuovilo e aggiungi la scheda.");
+      } finally {
+        setApproving(false);
+      }
     }
     function remove(id) {
+      const gone = entries.find((e) => e.id === id);
+      if (gone) (gone.contexts || []).forEach((c) => deleteImage(c.image));
       const next = entries.filter((e) => e.id !== id);
       setEntries(next);
       persist(next);
@@ -1296,6 +1781,15 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       );
       setEntries(next);
       persist(next);
+    }
+    function setEntryContexts(id, update) {
+      setEntries((prev) => {
+        const next = prev.map((e) =>
+          e.id === id ? { ...e, contexts: update(e.contexts || []) } : e
+        );
+        persist(next);
+        return next;
+      });
     }
     function exportJson() {
       const blob = new Blob(
@@ -1399,7 +1893,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       if (query.trim()) {
         const q = query.toLowerCase();
         list = list.filter((e) =>
-          (e.term + " " + e.meaning_it + " " + (e.it_source || "") + " " + (e.examples || []).join(" "))
+          (e.term + " " + e.meaning_it + " " + (e.it_source || "") + " " + (e.examples || []).join(" ") + " " + (e.contexts || []).map((c) => c.quote + " " + c.source).join(" "))
             .toLowerCase()
             .includes(q)
         );
@@ -1547,6 +2041,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             topicFilter: topicFilter,
             setTopicFilter: setTopicFilter,
             setEntryTopic: setEntryTopic,
+            updateContexts: setEntryContexts,
             openId: openId,
             setOpenId: setOpenId,
             remove: remove
@@ -1964,7 +2459,38 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                       t.name
                     )
                   )
-                )
+                ),
+              h(
+                "div",
+                { className: "vb-ctx vb-ctx-pending" },
+                pendingCtx
+                  ? [
+                      h(
+                        "div",
+                        { key: "h", className: "vb-ctx-head" },
+                        h("span", { className: "vb-ctx-title" }, "Dove l'hai visto?"),
+                        h(
+                          "button",
+                          {
+                            className: "vb-link",
+                            disabled: approving,
+                            onClick: () => {
+                              setPendingCtx(null);
+                              setPendingCtxErr(null);
+                            }
+                          },
+                          "Rimuovi"
+                        )
+                      ),
+                      h(ContextForm, { key: "f", draft: pendingCtx, setDraft: setPendingCtx })
+                    ]
+                  : h(
+                      "button",
+                      { className: "vb-link", onClick: () => setPendingCtx(emptyDraft()) },
+                      "+ Dove l'hai visto? Link o screenshot"
+                    ),
+                pendingCtxErr && h("div", { className: "vb-err vb-ctx-err" }, pendingCtxErr)
+              )
               ),
               /*#__PURE__*/React.createElement(
                 "div",
@@ -1977,7 +2503,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                   "button",
                   {
                     className: "vb-btn vb-btn-ghost",
-                    disabled: adding,
+                    disabled: adding || approving,
                     onClick: pendingEntry && candidates ? backToCandidates : discardPending
                   },
                   pendingEntry ? (candidates ? "\u2039 Indietro" : "Scarta") : "Annulla"
@@ -1987,9 +2513,10 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     "button",
                     {
                       className: "vb-btn",
-                      onClick: approvePending
+                      disabled: approving,
+                      onClick: confirmPending
                     },
-                    "Aggiungi"
+                    approving ? [h("span", { key: "s", className: "vb-spin" }), " Salvo\u2026"] : "Aggiungi"
                   )
               )
             )
@@ -2187,12 +2714,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       topicFilter,
       setTopicFilter,
       setEntryTopic,
+      updateContexts,
       openId,
       setOpenId,
       remove
     } = props;
     const [confirmEntry, setConfirmEntry] = useState(null);
     const [filtersOpen, setFiltersOpen] = useState(false);
+    const [lightbox, setLightbox] = useState(null); // url dello screenshot aperto a tutto schermo
     const filterActive = filter !== "all" || topicFilter !== "all";
     if (!loaded)
       return /*#__PURE__*/React.createElement(
@@ -2406,18 +2935,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               },
               e.meaning_it
             ),
-            entryTopic &&
-              /*#__PURE__*/React.createElement(
+            (entryTopic || (e.contexts && e.contexts.length > 0)) &&
+              h(
                 "div",
                 null,
-                /*#__PURE__*/React.createElement(
-                  "span",
-                  {
-                    className: "vb-pill"
-                  },
-                  "\uD83C\uDFF7 ",
-                  entryTopic.name
-                )
+                entryTopic && h("span", { className: "vb-pill" }, "\uD83C\uDFF7 ", entryTopic.name),
+                e.contexts &&
+                  e.contexts.length > 0 &&
+                  h("span", { className: "vb-pill" + (entryTopic ? " vb-ctx-count" : "") }, "\u25B6 dal vivo \xB7 ", e.contexts.length)
               ),
             e.examples[0] &&
               /*#__PURE__*/React.createElement(
@@ -2528,6 +3053,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                       })
                     )
                   ),
+                h(ContextSection, { entry: e, updateContexts, onOpenImage: setLightbox }),
                 /*#__PURE__*/React.createElement(
                   "div",
                   {
@@ -2556,6 +3082,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           );
         })
       ),
+      lightbox &&
+        h("div", { className: "vb-lightbox", onClick: () => setLightbox(null) }, h("img", { src: lightbox, alt: "Screenshot" })),
       confirmEntry &&
         /*#__PURE__*/React.createElement(
           "div",

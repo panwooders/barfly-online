@@ -127,3 +127,21 @@ tra loro in automatico — il ponte tra le due è l'Esporta/Importa JSON.
   avesse in mano solo l'indirizzo del progetto Supabase non potrebbe comunque
   leggere né scrivere nulla senza la service_role key, che non esce mai da
   Vercel.
+
+## Contesto reale ("Visto dal vivo") — dal 25 novembre 2026
+
+Ogni scheda ha una sezione **Visto dal vivo**: link, frase sentita, chi la dice
+e uno screenshot. Si compila dalla scheda in Collezione oppure, al momento
+dell'inserimento, dalla modale di revisione ("+ Dove l'hai visto?").
+
+- `api/media.js` salva gli screenshot su **Supabase Storage**, in un bucket
+  privato `barfly-media` che la funzione crea da sola al primo upload. Niente
+  da configurare: usa le stesse variabili `SUPABASE_URL` e
+  `SUPABASE_SERVICE_ROLE_KEY`. Nel JSON delle schede resta solo il percorso.
+- `api/context.js` è il pulsante **✨ Trova con l'IA**: ricerca web di
+  Anthropic (massimo 3 ricerche) per un video YouTube e una o due citazioni.
+  Tiene solo i link che compaiono davvero nei risultati della ricerca e
+  restituisce il costo della chiamata, mostrato sotto i risultati. Il totale
+  speso si accumula nel browser (per dispositivo).
+- Modello della ricerca: `claude-haiku-5-5` di default. Per provarne un altro,
+  variabile d'ambiente facoltativa `CONTEXT_MODEL` su Vercel.
